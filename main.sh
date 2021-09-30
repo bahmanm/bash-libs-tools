@@ -249,11 +249,13 @@ function ws.delete {
 }
 
 ###############
-# ws.create(ws, root, tagfile)
+# ws._init(ws, root, tagfile)
 # output: n/a
 # returns: 0
 ###############
-function ws.create {
+function ws._init {
+  [[ '-h' == "$1" ]] && echo 'ws._init ws root=cwd tagfile=TAGS' && return
+
   local ws=$(ws._abspath "$1")
   local root=$(readlink -f "${2:-$(pwd)}")
   local tagfile="$root/${3:-TAGS}"
@@ -277,7 +279,7 @@ function ws.create {
 function ws.verify_exists {
   local ws=$(ws._abspath "$1")
   if [[ ! -f "$ws" ]]; then
-    echo "missing workspace - use `ws.create`" >&2
+    echo "missing workspace - use `ws._init`" >&2
     exit 1
   fi
 }
@@ -300,6 +302,24 @@ function ws.dirs._add {
       | jq -r ".dirs.\"$dir\".excludes = \"$excludes\"" > "$tmp_ws"; } \
     && cp -f "$ws" "$ws.backup" \
     && mv "$tmp_ws" "$ws"
+}
+
+###############
+# ws.dirs._delete(ws, dir)
+# output: n/a
+# returns: 0
+###############
+function ws.dirs._delete {
+  [[ '-h' == "$1" ]] && echo 'ws.dirs._delete ws dir' && return
+
+  local ws ws_root dir
+  ws=$(ws._abspath "$1") &&  ws.verify_exists "$1"
+  dir="$2"
+  tmp_ws=$(mktemp)
+  jq -er "del(.dirs.\"$dir\")" < "$ws" > "$tmp_ws" \
+    && cp -f "$ws" "$ws.backup" \
+    && mv "$tmp_ws" "$ws" \
+    && rm -rf "$dir"
 }
 
 ###############
@@ -340,6 +360,72 @@ function ws.update_vcs {
   for dir in $dirs; do
     git.update_repo "$dir" || exit 1
   done
+}
+
+###############
+# ws.create(ws, branch_name, git_repos)
+# adds checked out working trees for each `git_repo` using the branch name
+# `branch_name`.
+# output: none
+# returns: 0
+###############
+function ws.create {
+  [[ '-h' == "$1" ]] && echo 'ws.create ws ws_root branch git_repos[]' && return
+
+  local ws ws_root branch_name
+  local -a git_repos
+
+  ws="$1"
+  ws_root="$2"
+  ws._init "$ws" "$ws_root"
+  branch_name="$3"
+  read -r -a git_repos <<< "${@:4}"
+  for repo in "${git_repos[@]}"; do
+    ws.add_repo "$ws" "$branch_name" "$repo"
+  done
+}
+
+###############
+# ws.add_repo(ws, branch_name, git_repo)
+# adds checked out working tree of `git_repo` using the branch name
+# `branch_name`.
+# output: none
+# returns: 0
+###############
+function ws.add_repo {
+  [[ '-h' == "$1" ]] && echo 'ws.add_repo ws branch git_repo' && return
+
+  local ws branch_name git_repo
+  local ws_root worktree_path git_cmd git_dir
+
+  ws="$1"
+  ws_root=$(ws._get_root "$ws")
+  branch_name="$2"
+  git_repo="$3"
+  git_dir="${git_repo}/.git"
+  worktree_path="${ws_root}/$(basename $git_repo)"
+  git_cmd="git --git-dir=$git_dir"
+  $git_cmd fetch -q \
+    && $git_cmd worktree add -q -b "$branch_name" "$worktree_path" origin/master \
+    && ws.dirs._add "$ws" "$worktree_path"
+}
+
+###############
+# ws.delete_repo(ws, worktree_name)
+function ws.delete_repo {
+  [[ '-h' == "$1" ]] && echo 'ws.delete_repo ws worktree_name' && return
+
+  local ws worktree_name
+  local ws_root worktree_path git_dir
+
+  ws="$1"
+  ws_root=$(ws._get_root "$ws")
+  worktree_name="$2"
+  worktree_path="${ws_root}/${worktree_name}"
+  git_dir=$(git --git-dir="${worktree_path}/.git" rev-parse --git-common-dir) \
+    || return 1
+  git --git-dir="$git_dir" worktree remove -f "$worktree_path" \
+    && ws.dirs._delete "$ws" "$worktree_path"
 }
 
 ################################################################################
